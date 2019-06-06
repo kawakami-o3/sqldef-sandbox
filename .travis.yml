@@ -1,29 +1,29 @@
-#language: go
-#go:
-#  - '1.10'
-#branches:
-#  only:
-#    - master
-#    - /\Av\d+\.\d+\.\d+\z/
-#services:
-#  - mysql
-#  - postgresql
-#addons:
-#  apt:
-#    sources:
-#      - mysql-5.7-trusty
-#    packages:
-#      - mysql-server
-#      - mysql-client
-#before_install:
-#  - sudo mysql -e "use mysql; update user set authentication_string=PASSWORD('new_password') where User='root'; update user set plugin='mysql_native_password';FLUSH PRIVILEGES;"
-#  - sudo mysql_upgrade -u root -pnew_password
-#  - sudo service mysql restart
-#  - sudo mysqladmin -u root -pnew_password password ''
-#script:
-#  - make test
-#before_deploy:
-#  - make package
+language: go
+go:
+  - '1.10'
+branches:
+  only:
+    - master
+    - /\Av\d+\.\d+\.\d+\z/
+services:
+  - mysql
+  - postgresql
+addons:
+  apt:
+    sources:
+      - mysql-5.7-trusty
+    packages:
+      - mysql-server
+      - mysql-client
+before_install:
+  - sudo mysql -e "use mysql; update user set authentication_string=PASSWORD('new_password') where User='root'; update user set plugin='mysql_native_password';FLUSH PRIVILEGES;"
+  - sudo mysql_upgrade -u root -pnew_password
+  - sudo service mysql restart
+  - sudo mysqladmin -u root -pnew_password password ''
+script:
+  - make test
+before_deploy:
+  - make package
 #deploy:
 #  provider: releases
 #  api_key:
