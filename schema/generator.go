@@ -183,7 +183,7 @@ func (g *Generator) generateDDLsForCreateTable(currentTable Table, desired Creat
 			ddls = append(ddls, ddl)
 		} else {
 			// Change column data type as needed.
-			if !haveSameDataType(*currentColumn, desiredColumn) || !areAtSamePosition(*currentColumn, desiredColumn) {
+			if !haveSameDataType(*currentColumn, desiredColumn) || !areSamePosition(*currentColumn, desiredColumn) {
 				definition, err := g.generateColumnDefinition(desiredColumn) // TODO: Parse DEFAULT NULL and share this with else
 				if err != nil {
 					return ddls, err
@@ -192,11 +192,13 @@ func (g *Generator) generateDDLsForCreateTable(currentTable Table, desired Creat
 				if g.mode == GeneratorModeMysql { // DDL is not compatible. TODO: support PostgreSQL
 					ddl := fmt.Sprintf("ALTER TABLE %s CHANGE COLUMN %s %s", desired.table.name, currentColumn.name, definition) // TODO: escape
 
-					after := " FIRST"
-					if i > 0 {
-						after = " AFTER " + desired.table.columns[i-1].name
+					if !areSamePosition(*currentColumn, desiredColumn) {
+						after := " FIRST"
+						if i > 0 {
+							after = " AFTER " + desired.table.columns[i-1].name
+						}
+						ddl += after
 					}
-					ddl += after
 
 					ddls = append(ddls, ddl)
 				}
@@ -618,7 +620,7 @@ func haveSameDataType(current Column, desired Column) bool {
 	//	(current.keyOption == desired.keyOption)
 }
 
-func areAtSamePosition(current Column, desired Column) bool {
+func areSamePosition(current Column, desired Column) bool {
 	return current.position == desired.position
 }
 
