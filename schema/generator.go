@@ -182,7 +182,9 @@ func (g *Generator) generateDDLsForCreateTable(currentTable Table, desired Creat
 
 			ddls = append(ddls, ddl)
 		} else {
-			changeOrder := currentColumn.position - desiredColumn.position > len(currentTable.columns) - len(desired.table.columns)
+			cp := currentColumn.position
+			dp := desiredColumn.position
+			changeOrder := cp > dp && cp - dp > len(currentTable.columns) - len(desired.table.columns)
 			// Change column data type as needed.
 			if !haveSameDataType(*currentColumn, desiredColumn) || changeOrder {
 				definition, err := g.generateColumnDefinition(desiredColumn) // TODO: Parse DEFAULT NULL and share this with else
