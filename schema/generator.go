@@ -579,7 +579,7 @@ func findTableByName(tables []*Table, name string) *Table {
 }
 
 func findColumnByName(columns []Column, name string) *Column {
-	for i, column := range columns {
+	for _, column := range columns {
 		if column.name == name {
 			return &column
 		}
