@@ -7,10 +7,10 @@ import (
 
 	"github.com/howeyc/gopass"
 	"github.com/jessevdk/go-flags"
-	"github.com/k0kubun/sqldef"
-	"github.com/k0kubun/sqldef/adapter"
-	"github.com/k0kubun/sqldef/adapter/postgres"
-	"github.com/k0kubun/sqldef/schema"
+	"github.com/kawakami-o3/sqldef-sandbox"
+	"github.com/kawakami-o3/sqldef-sandbox/adapter"
+	"github.com/kawakami-o3/sqldef-sandbox/adapter/postgres"
+	"github.com/kawakami-o3/sqldef-sandbox/schema"
 )
 
 // Return parsed options and schema filename

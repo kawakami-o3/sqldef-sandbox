@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/k0kubun/sqldef/adapter"
+	"github.com/kawakami-o3/sqldef-sandbox/adapter"
 	_ "github.com/lib/pq"
 )
 

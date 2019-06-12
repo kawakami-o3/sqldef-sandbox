@@ -8,8 +8,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/k0kubun/sqldef/adapter"
-	"github.com/k0kubun/sqldef/schema"
+	"github.com/kawakami-o3/sqldef-sandbox/adapter"
+	"github.com/kawakami-o3/sqldef-sandbox/schema"
 )
 
 type Options struct {
