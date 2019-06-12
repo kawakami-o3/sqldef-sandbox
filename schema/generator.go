@@ -182,8 +182,9 @@ func (g *Generator) generateDDLsForCreateTable(currentTable Table, desired Creat
 
 			ddls = append(ddls, ddl)
 		} else {
+			changeOrder := currentColumn.position - desiredColumn > len(currentTable.table.columns) - len(desired.table.columns)
 			// Change column data type as needed.
-			if !haveSameDataType(*currentColumn, desiredColumn) || !areSamePosition(*currentColumn, desiredColumn) {
+			if !haveSameDataType(*currentColumn, desiredColumn) || changeOrder {
 				definition, err := g.generateColumnDefinition(desiredColumn) // TODO: Parse DEFAULT NULL and share this with else
 				if err != nil {
 					return ddls, err
@@ -192,7 +193,7 @@ func (g *Generator) generateDDLsForCreateTable(currentTable Table, desired Creat
 				if g.mode == GeneratorModeMysql { // DDL is not compatible. TODO: support PostgreSQL
 					ddl := fmt.Sprintf("ALTER TABLE %s CHANGE COLUMN %s %s", desired.table.name, currentColumn.name, definition) // TODO: escape
 
-					if !areSamePosition(*currentColumn, desiredColumn) {
+					if changeOrder {
 						after := " FIRST"
 						if i > 0 {
 							after = " AFTER " + desired.table.columns[i-1].name
@@ -618,10 +619,6 @@ func haveSameDataType(current Column, desired Column) bool {
 
 	// TODO: Examine unique key properly with table indexes (primary key is already examined)
 	//	(current.keyOption == desired.keyOption)
-}
-
-func areSamePosition(current Column, desired Column) bool {
-	return current.position == desired.position
 }
 
 func normalizeDataType(dataType string) string {
