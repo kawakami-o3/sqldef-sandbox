@@ -6,10 +6,10 @@ import (
 	"os"
 
 	"github.com/jessevdk/go-flags"
-	"github.com/k0kubun/sqldef"
-	"github.com/k0kubun/sqldef/adapter"
-	"github.com/k0kubun/sqldef/adapter/sqlite3"
-	"github.com/k0kubun/sqldef/schema"
+	"github.com/kawakami-o3/sqldef-sandbox"
+	"github.com/kawakami-o3/sqldef-sandbox/adapter"
+	"github.com/kawakami-o3/sqldef-sandbox/adapter/sqlite3"
+	"github.com/kawakami-o3/sqldef-sandbox/schema"
 )
 
 var version string

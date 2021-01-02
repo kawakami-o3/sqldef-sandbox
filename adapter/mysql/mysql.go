@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	driver "github.com/go-sql-driver/mysql"
-	"github.com/k0kubun/sqldef/adapter"
+	"github.com/kawakami-o3/sqldef-sandbox/adapter"
 )
 
 type MysqlDatabase struct {
