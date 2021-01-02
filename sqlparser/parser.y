@@ -155,28 +155,31 @@ func forceEOF(yylex interface{}) {
 
 // DDL Tokens
 %token <bytes> CREATE ALTER DROP RENAME ANALYZE ADD
-%token <bytes> SCHEMA TABLE INDEX VIEW TO IGNORE IF PRIMARY COLUMN CONSTRAINT REFERENCES SPATIAL FULLTEXT FOREIGN KEY_BLOCK_SIZE
+%token <bytes> SCHEMA TABLE INDEX VIEW TO IGNORE IF PRIMARY COLUMN CONSTRAINT REFERENCES SPATIAL FULLTEXT FOREIGN KEY_BLOCK_SIZE POLICY
 %right <bytes> UNIQUE KEY
 %token <bytes> SHOW DESCRIBE EXPLAIN DATE ESCAPE REPAIR OPTIMIZE TRUNCATE
 %token <bytes> MAXVALUE PARTITION REORGANIZE LESS THAN PROCEDURE TRIGGER
 %token <bytes> VINDEX VINDEXES
 %token <bytes> STATUS VARIABLES
 %token <bytes> RESTRICT CASCADE NO ACTION
+%token <bytes> PERMISSIVE RESTRICTIVE PUBLIC CURRENT_USER SESSION_USER
 
 // Transaction Tokens
 %token <bytes> BEGIN START TRANSACTION COMMIT ROLLBACK
 
 // Type Tokens
-%token <bytes> BIT TINYINT SMALLINT MEDIUMINT INT INTEGER BIGINT INTNUM
-%token <bytes> REAL DOUBLE FLOAT_TYPE DECIMAL NUMERIC
+%token <bytes> BIT TINYINT SMALLINT SMALLSERIAL MEDIUMINT INT INTEGER SERIAL BIGINT BIGSERIAL INTNUM
+%token <bytes> REAL DOUBLE PRECISION FLOAT_TYPE DECIMAL NUMERIC
 %token <bytes> TIME TIMESTAMP DATETIME YEAR
 %token <bytes> CHAR VARCHAR VARYING BOOL CHARACTER VARBINARY NCHAR UUID
 %token <bytes> TEXT TINYTEXT MEDIUMTEXT LONGTEXT
-%token <bytes> BLOB TINYBLOB MEDIUMBLOB LONGBLOB JSON ENUM
+%token <bytes> BLOB TINYBLOB MEDIUMBLOB LONGBLOB JSON JSONB ENUM
 %token <bytes> GEOMETRY POINT LINESTRING POLYGON GEOMETRYCOLLECTION MULTIPOINT MULTILINESTRING MULTIPOLYGON
+%token <bytes> ARRAY
+%token <bytes> NOW
 
 // Type Modifiers
-%token <bytes> NULLX AUTO_INCREMENT APPROXNUM SIGNED UNSIGNED ZEROFILL
+%token <bytes> NULLX AUTO_INCREMENT APPROXNUM SIGNED UNSIGNED ZEROFILL ZONE
 
 // Supported SHOW tokens
 %token <bytes> DATABASES TABLES VITESS_KEYSPACES VITESS_SHARDS VITESS_TABLETS VSCHEMA_TABLES EXTENDED FULL PROCESSLIST
@@ -194,7 +197,7 @@ func forceEOF(yylex interface{}) {
 %token <bytes> GROUP_CONCAT SEPARATOR
 
 // Match
-%token <bytes> MATCH AGAINST BOOLEAN LANGUAGE WITH PARSER QUERY EXPANSION
+%token <bytes> MATCH AGAINST BOOLEAN LANGUAGE WITH WITHOUT PARSER QUERY EXPANSION
 
 // MySQL reserved words that are unused by this grammar will map to this token.
 %token <bytes> UNUSED
@@ -269,17 +272,17 @@ func forceEOF(yylex interface{}) {
 %type <empty> force_eof ddl_force_eof
 %type <str> charset
 %type <str> set_session_or_global show_session_or_global
-%type <convertType> convert_type
+%type <convertType> convert_type simple_convert_type
 %type <columnType> column_type
 %type <columnType> bool_type int_type decimal_type numeric_type time_type char_type spatial_type
 %type <optVal> length_opt
 %type <str> charset_opt collate_opt
-%type <boolVal> unsigned_opt zero_fill_opt
+%type <boolVal> unsigned_opt zero_fill_opt array_opt time_zone_opt
 %type <LengthScaleOption> float_length_opt decimal_length_opt
 %type <strs> enum_values
 %type <columnDefinition> column_definition
 %type <columnType> column_definition_type
-%type <indexDefinition> index_definition
+%type <indexDefinition> index_definition primary_key_definition
 %type <foreignKeyDefinition> foreign_key_definition foreign_key_without_options
 %type <colIdent> reference_option
 %type <colIdent> sql_id_opt
@@ -300,6 +303,10 @@ func forceEOF(yylex interface{}) {
 %type <vindexParams> vindex_param_list vindex_params_opt
 %type <colIdent> vindex_type vindex_type_opt
 %type <bytes> alter_object_type
+%type <bytes> policy_as_opt policy_for_opt character_cast_opt
+%type <expr> using_opt with_check_opt
+%left <bytes> TYPECAST CHECK
+%type <bytes> or_replace_opt
 
 %start any_command
 
@@ -543,7 +550,7 @@ create_statement:
     $1.TableSpec = $2
     $$ = $1
   }
-| CREATE unique_opt INDEX sql_id ON table_name '(' column_list ')'
+| CREATE unique_opt INDEX sql_id ON table_name '(' column_list ')' where_expression_opt
   {
     $$ = &DDL{
         Action: CreateIndexStr,
@@ -553,6 +560,7 @@ create_statement:
           Name: $4,
           Type: NewColIdent(""),
           Unique: bool($2),
+          Where: NewWhere(WhereStr, $10),
         },
         IndexCols: $8,
       }
@@ -573,7 +581,7 @@ create_statement:
       }
   }
 /* For PostgreSQL */
-| CREATE unique_opt INDEX sql_id ON table_name USING sql_id '(' column_list ')'
+| CREATE unique_opt INDEX sql_id ON table_name USING sql_id '(' column_list ')' where_expression_opt
   {
     $$ = &DDL{
         Action: CreateIndexStr,
@@ -583,17 +591,18 @@ create_statement:
           Name: $4,
           Type: $8,
           Unique: bool($2),
+          Where: NewWhere(WhereStr, $12),
         },
         IndexCols: $10,
       }
   }
-| CREATE VIEW table_name ddl_force_eof
+| CREATE or_replace_opt VIEW table_name AS select_statement
   {
-    $$ = &DDL{Action: CreateStr, NewName: $3.ToViewName()}
-  }
-| CREATE OR REPLACE VIEW table_name ddl_force_eof
-  {
-    $$ = &DDL{Action: CreateStr, NewName: $5.ToViewName()}
+    $$ = &DDL{Action: CreateViewStr, View: &View{
+        Action: CreateViewStr,
+        Name: $4.ToViewName(),
+        Definition: $6,
+    }}
   }
 | CREATE VINDEX sql_id vindex_type_opt vindex_params_opt
   {
@@ -610,6 +619,73 @@ create_statement:
 | CREATE SCHEMA not_exists_opt ID ddl_force_eof
   {
     $$ = &DBDDL{Action: CreateStr, DBName: string($4)}
+  }
+| CREATE POLICY sql_id ON table_name policy_as_opt policy_for_opt TO sql_id_list using_opt with_check_opt
+  {
+    $$ = &DDL{Action: CreatePolicyStr, Table: $5, Policy: &Policy{
+        Name: $3,
+        Permissive: Permissive($6),
+        Scope: $7,
+        To: $9,
+        Using: NewWhere(WhereStr, $10),
+        WithCheck: NewWhere(WhereStr, $11),
+    }}
+  }
+
+policy_as_opt:
+  {
+    $$ = nil
+  }
+| AS PERMISSIVE
+  {
+    $$ = $2
+  }
+| AS RESTRICTIVE
+  {
+    $$ = $2
+  }
+
+policy_for_opt:
+  {
+    $$ = nil
+  }
+| FOR ALL
+  {
+    $$ = $2
+  }
+| FOR SELECT
+  {
+    $$ = $2
+  }
+| FOR INSERT
+  {
+    $$ = $2
+  }
+| FOR UPDATE
+  {
+    $$ = $2
+  }
+| FOR DELETE
+  {
+    $$ = $2
+  }
+
+using_opt:
+  {
+    $$ = nil
+  }
+| USING expression
+  {
+    $$ = $2
+  }
+
+with_check_opt:
+  {
+    $$ = nil
+  }
+| WITH CHECK expression
+  {
+    $$ = $3
   }
 
 unique_opt:
@@ -663,6 +739,15 @@ vindex_param:
     $$ = VindexParam{Key: $1, Val: $3}
   }
 
+or_replace_opt:
+  {
+    $$ = nil
+  }
+| OR REPLACE
+  {
+    $$ = nil
+  }
+
 create_table_prefix:
   CREATE TABLE not_exists_opt table_name
   {
@@ -695,6 +780,10 @@ table_column_list:
   {
     $$.AddForeignKey($3)
   }
+| table_column_list ',' primary_key_definition
+  {
+    $$.AddIndex($3)
+  }
 
 column_definition:
   ID column_definition_type
@@ -713,27 +802,28 @@ column_type:
 | time_type
 | spatial_type
 column_definition_type:
-  column_type
+  column_type array_opt
   {
-    $1.NotNull = BoolVal(false)
+    $1.NotNull = nil
     $1.Default = nil
     $1.OnUpdate = nil
     $1.Autoincrement = BoolVal(false)
     $1.KeyOpt = colKeyNone
     $1.Comment = nil
+    $1.Array = $2
     $$ = $1
   }
 | column_definition_type NULL
   {
-    $1.NotNull = BoolVal(false)
+    $1.NotNull = NewBoolVal(false)
     $$ = $1
   }
 | column_definition_type NOT NULL
   {
-    $1.NotNull = BoolVal(true)
+    $1.NotNull = NewBoolVal(true)
     $$ = $1
   }
-| column_definition_type DEFAULT STRING
+| column_definition_type DEFAULT STRING character_cast_opt
   {
     $1.Default = NewStrVal($3)
     $$ = $1
@@ -753,9 +843,9 @@ column_definition_type:
     $1.Default = NewValArg($3)
     $$ = $1
   }
-| column_definition_type DEFAULT CURRENT_TIMESTAMP
+| column_definition_type DEFAULT CURRENT_TIMESTAMP length_opt
   {
-    $1.Default = NewValArg($3)
+    $1.Default = NewValArgWithOpt($3, $4)
     $$ = $1
   }
 | column_definition_type DEFAULT BIT_LITERAL
@@ -763,9 +853,9 @@ column_definition_type:
     $1.Default = NewBitVal($3)
     $$ = $1
   }
-| column_definition_type ON UPDATE CURRENT_TIMESTAMP
+| column_definition_type ON UPDATE CURRENT_TIMESTAMP length_opt
   {
-    $1.OnUpdate = NewValArg($4)
+    $1.OnUpdate = NewValArgWithOpt($4, $5)
     $$ = $1
   }
 | column_definition_type AUTO_INCREMENT
@@ -798,6 +888,34 @@ column_definition_type:
     $1.Comment = NewStrVal($3)
     $$ = $1
   }
+| column_definition_type DEFAULT boolean_value
+  {
+    $1.Default = NewBoolSQLVal(bool($3))
+    $$ = $1
+  }
+| column_definition_type DEFAULT NOW openb closeb
+  {
+    $1.Default = NewBitVal($3)
+    $$ = $1
+  }
+| column_definition_type REFERENCES table_id
+  {
+    $1.References = $3.v
+    $$ = $1
+  }
+| column_definition_type REFERENCES table_id '(' column_list ')'
+  {
+    $1.References     = $3.v
+    $1.ReferenceNames = $5
+    $$ = $1
+  }
+
+character_cast_opt:
+  {
+    $$ = nil
+  }
+| TYPECAST CHARACTER VARYING
+| TYPECAST TIMESTAMP time_zone_opt
 
 numeric_type:
   int_type length_opt
@@ -823,6 +941,10 @@ int_type:
   {
     $$ = ColumnType{Type: string($1)}
   }
+| SMALLSERIAL
+  {
+    $$ = ColumnType{Type: string($1)}
+  }
 | MEDIUMINT
   {
     $$ = ColumnType{Type: string($1)}
@@ -835,7 +957,15 @@ int_type:
   {
     $$ = ColumnType{Type: string($1)}
   }
+| SERIAL
+  {
+    $$ = ColumnType{Type: string($1)}
+  }
 | BIGINT
+  {
+    $$ = ColumnType{Type: string($1)}
+  }
+| BIGSERIAL
   {
     $$ = ColumnType{Type: string($1)}
   }
@@ -846,6 +976,12 @@ REAL float_length_opt
     $$ = ColumnType{Type: string($1)}
     $$.Length = $2.Length
     $$.Scale = $2.Scale
+  }
+| DOUBLE PRECISION float_length_opt
+  {
+    $$ = ColumnType{Type: string($1)+" "+string($2)}
+    $$.Length = $3.Length
+    $$.Scale = $3.Scale
   }
 | DOUBLE float_length_opt
   {
@@ -877,13 +1013,13 @@ time_type:
   {
     $$ = ColumnType{Type: string($1)}
   }
-| TIME length_opt
+| TIME length_opt time_zone_opt
   {
-    $$ = ColumnType{Type: string($1), Length: $2}
+    $$ = ColumnType{Type: string($1), Length: $2, Timezone: $3}
   }
-| TIMESTAMP length_opt
+| TIMESTAMP length_opt time_zone_opt
   {
-    $$ = ColumnType{Type: string($1), Length: $2}
+    $$ = ColumnType{Type: string($1), Length: $2, Timezone: $3}
   }
 | DATETIME length_opt
   {
@@ -962,6 +1098,10 @@ char_type:
     $$ = ColumnType{Type: string($1)}
   }
 | JSON
+  {
+    $$ = ColumnType{Type: string($1)}
+  }
+| JSONB
   {
     $$ = ColumnType{Type: string($1)}
   }
@@ -1063,6 +1203,19 @@ decimal_length_opt:
     }
   }
 
+time_zone_opt:
+  {
+    $$ = BoolVal(false)
+  }
+| WITH TIME ZONE
+  {
+    $$ = BoolVal(true)
+  }
+| WITHOUT TIME ZONE
+  {
+    $$ = BoolVal(false)
+  }
+
 unsigned_opt:
   {
     $$ = BoolVal(false)
@@ -1077,6 +1230,19 @@ zero_fill_opt:
     $$ = BoolVal(false)
   }
 | ZEROFILL
+  {
+    $$ = BoolVal(true)
+  }
+
+array_opt:
+  {
+    $$ = BoolVal(false)
+  }
+| '[' ']'
+  {
+    $$ = BoolVal(true)
+  }
+| ARRAY
   {
     $$ = BoolVal(true)
   }
@@ -1097,6 +1263,10 @@ charset_opt:
 collate_opt:
   {
     $$ = ""
+  }
+| BINARY
+  {
+    $$ = string($1) // Set pseudo collation "binary" for BINARY attribute (deprecated in future MySQL versions)
   }
 | COLLATE ID
   {
@@ -1263,6 +1433,15 @@ reference_option:
 | NO ACTION
   {
     $$ = NewColIdent("NO ACTION")
+  }
+
+primary_key_definition:
+  CONSTRAINT sql_id PRIMARY KEY '(' index_column_list ')'
+  {
+    $$ = &IndexDefinition{
+      Info: &IndexInfo{Type: string($3) + " " + string($4), Name: NewColIdent("PRIMARY"), Primary: true, Unique: true},
+      Columns: $6,
+    }
   }
 
 sql_id_opt:
@@ -2421,6 +2600,10 @@ value_expression:
     // will be non-trivial because of grammar conflicts.
     $$ = &IntervalExpr{Expr: $2, Unit: $3.String()}
   }
+| value_expression TYPECAST simple_convert_type
+  {
+    $$ = &ConvertExpr{Expr: $1, Type: $3}
+  }
 | function_call_generic
 | function_call_keyword
 | function_call_nonkeyword
@@ -2551,6 +2734,10 @@ function_call_nonkeyword:
   {
     $$ = &FuncExpr{Name:NewColIdent("current_time")}
   }
+| TYPECAST simple_convert_type
+  {
+    $$ = &ConvertExpr{Type: $2}
+  }
 
 func_datetime_precision_opt:
   /* empty */
@@ -2641,6 +2828,10 @@ convert_type:
   {
     $$ = &ConvertType{Type: string($1)}
   }
+| JSONB
+  {
+    $$ = &ConvertType{Type: string($1)}
+  }
 | NCHAR length_opt
   {
     $$ = &ConvertType{Type: string($1), Length: $2}
@@ -2662,6 +2853,36 @@ convert_type:
     $$ = &ConvertType{Type: string($1)}
   }
 | UNSIGNED INTEGER
+  {
+    $$ = &ConvertType{Type: string($1)}
+  }
+
+simple_convert_type:
+  BINARY
+  {
+    $$ = &ConvertType{Type: string($1)}
+  }
+| CHARACTER VARYING
+  {
+    $$ = &ConvertType{Type: string($1)+" "+string($2)}
+  }
+| DATE
+  {
+    $$ = &ConvertType{Type: string($1)}
+  }
+| DATETIME
+  {
+    $$ = &ConvertType{Type: string($1)}
+  }
+| int_type
+  {
+    $$ = &ConvertType{Type: $1.Type}
+  }
+| bool_type
+  {
+    $$ = &ConvertType{Type: $1.Type}
+  }
+| TEXT
   {
     $$ = &ConvertType{Type: string($1)}
   }
@@ -3188,6 +3409,7 @@ reserved_keyword:
 | OR
 | ORDER
 | OUTER
+| POLICY
 | REGEXP
 | RENAME
 | REPLACE
@@ -3225,8 +3447,10 @@ reserved_keyword:
 non_reserved_keyword:
   ACTION
 | AGAINST
+| ALL
 | BEGIN
 | BIGINT
+| BIGSERIAL
 | BIT
 | BLOB
 | BOOL
@@ -3235,10 +3459,12 @@ non_reserved_keyword:
 | CHAR
 | CHARACTER
 | CHARSET
+| CHECK
 | COMMENT_KEYWORD
 | COMMIT
 | COMMITTED
 | CONSTRAINT
+| CURRENT_USER
 | DATE
 | DATETIME
 | DECIMAL
@@ -3274,27 +3500,33 @@ non_reserved_keyword:
 | NAMES
 | NCHAR
 | NO
+| NOW
 | NUMERIC
 | OFFSET
 | OPTIMIZE
 | PARTITION
 | POINT
 | POLYGON
+| PRECISION
+| PERMISSIVE
 | PRIMARY
 | PROCEDURE
 | QUERY
 | READ
 | REAL
 | REORGANIZE
+| RESTRICTIVE
 | REPAIR
 | REPEATABLE
 | RESTRICT
 | ROLLBACK
 | SESSION
+| SERIAL
 | SERIALIZABLE
 | SHARE
 | SIGNED
 | SMALLINT
+| SMALLSERIAL
 | SPATIAL
 | START
 | STATUS
@@ -3324,9 +3556,11 @@ non_reserved_keyword:
 | VITESS_TABLETS
 | VSCHEMA_TABLES
 | WITH
+| WITHOUT
 | WRITE
 | YEAR
 | ZEROFILL
+| ZONE
 
 openb:
   '('

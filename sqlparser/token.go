@@ -22,8 +22,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/kawakami-o3/sqldef-sandbox/sqlparser/dependency/bytes2"
-	"github.com/kawakami-o3/sqldef-sandbox/sqlparser/dependency/sqltypes"
+	"github.com/k0kubun/sqldef/sqlparser/dependency/bytes2"
+	"github.com/k0kubun/sqldef/sqlparser/dependency/sqltypes"
 )
 
 type ParserMode int
@@ -34,6 +34,7 @@ const (
 
 	ParserModeMysql = ParserMode(iota)
 	ParserModePostgres
+	ParserModeSQLite3
 )
 
 // Tokenizer is the struct used to generate SQL
@@ -98,6 +99,7 @@ var keywords = map[string]int{
 	"alter":               ALTER,
 	"analyze":             ANALYZE,
 	"and":                 AND,
+	"array":               ARRAY,
 	"as":                  AS,
 	"asc":                 ASC,
 	"asensitive":          UNUSED,
@@ -106,6 +108,7 @@ var keywords = map[string]int{
 	"begin":               BEGIN,
 	"between":             BETWEEN,
 	"bigint":              BIGINT,
+	"bigserial":           BIGSERIAL,
 	"binary":              BINARY,
 	"_binary":             UNDERSCORE_BINARY,
 	"bit":                 BIT,
@@ -122,7 +125,7 @@ var keywords = map[string]int{
 	"char":                CHAR,
 	"character":           CHARACTER,
 	"charset":             CHARSET,
-	"check":               UNUSED,
+	"check":               CHECK,
 	"collate":             COLLATE,
 	"column":              COLUMN,
 	"comment":             COMMENT_KEYWORD,
@@ -139,7 +142,7 @@ var keywords = map[string]int{
 	"current_date":        CURRENT_DATE,
 	"current_time":        CURRENT_TIME,
 	"current_timestamp":   CURRENT_TIMESTAMP,
-	"current_user":        UNUSED,
+	"current_user":        CURRENT_USER,
 	"cursor":              UNUSED,
 	"database":            DATABASE,
 	"databases":           DATABASES,
@@ -225,6 +228,7 @@ var keywords = map[string]int{
 	"iterate":             UNUSED,
 	"join":                JOIN,
 	"json":                JSON,
+	"jsonb":               JSONB,
 	"key":                 KEY,
 	"keys":                KEYS,
 	"key_block_size":      KEY_BLOCK_SIZE,
@@ -271,6 +275,7 @@ var keywords = map[string]int{
 	"next":                NEXT,
 	"no":                  NO,
 	"not":                 NOT,
+	"now":                 NOW,
 	"no_write_to_binlog":  UNUSED,
 	"null":                NULL,
 	"numeric":             NUMERIC,
@@ -288,13 +293,16 @@ var keywords = map[string]int{
 	"outfile":             UNUSED,
 	"parser":              PARSER,
 	"partition":           PARTITION,
+	"permissive":          PERMISSIVE,
 	"point":               POINT,
+	"policy":              POLICY,
 	"polygon":             POLYGON,
-	"precision":           UNUSED,
+	"precision":           PRECISION,
 	"primary":             PRIMARY,
 	"processlist":         PROCESSLIST,
 	"procedure":           PROCEDURE,
 	"query":               QUERY,
+	"restrictive":         RESTRICTIVE,
 	"range":               UNUSED,
 	"read":                READ,
 	"reads":               UNUSED,
@@ -323,6 +331,7 @@ var keywords = map[string]int{
 	"select":              SELECT,
 	"sensitive":           UNUSED,
 	"separator":           SEPARATOR,
+	"serial":              SERIAL,
 	"serializable":        SERIALIZABLE,
 	"session":             SESSION,
 	"set":                 SET,
@@ -331,6 +340,7 @@ var keywords = map[string]int{
 	"signal":              UNUSED,
 	"signed":              SIGNED,
 	"smallint":            SMALLINT,
+	"smallserial":         SMALLSERIAL,
 	"spatial":             SPATIAL,
 	"specific":            UNUSED,
 	"sql":                 UNUSED,
@@ -398,11 +408,14 @@ var keywords = map[string]int{
 	"where":               WHERE,
 	"while":               UNUSED,
 	"with":                WITH,
+	"without":             WITHOUT,
 	"write":               WRITE,
 	"xor":                 UNUSED,
 	"year":                YEAR,
 	"year_month":          UNUSED,
 	"zerofill":            ZEROFILL,
+	"zone":                ZONE,
+	"::":                  TYPECAST,
 }
 
 // keywordStrings contains the reverse mapping of token to keyword strings
@@ -513,7 +526,7 @@ func (tkn *Tokenizer) Scan() (int, []byte) {
 		switch ch {
 		case eofChar:
 			return 0, nil
-		case '=', ',', ';', '(', ')', '+', '*', '%', '^', '~':
+		case '=', ',', ';', '(', ')', '[', ']', '+', '*', '%', '^', '~':
 			return int(ch), nil
 		case '&':
 			if tkn.lastChar == '&' {
@@ -556,6 +569,10 @@ func (tkn *Tokenizer) Scan() (int, []byte) {
 		case '#':
 			return tkn.scanCommentType1("#")
 		case '-':
+			if isDigit(tkn.lastChar) {
+				num, buf := tkn.scanNumber(false)
+				return num, append([]byte{'-'}, buf...)
+			}
 			switch tkn.lastChar {
 			case '-':
 				tkn.next()
@@ -615,7 +632,7 @@ func (tkn *Tokenizer) Scan() (int, []byte) {
 				return tkn.scanString(ch, STRING)
 			}
 		default:
-			if tkn.mode == ParserModeMysql && ch == '`' {
+			if tkn.mode != ParserModePostgres && ch == '`' {
 				return tkn.scanLiteralIdentifier()
 			}
 			return LEX_ERROR, []byte{byte(ch)}
@@ -727,6 +744,11 @@ func (tkn *Tokenizer) scanBindVar() (int, []byte) {
 	token := VALUE_ARG
 	tkn.next()
 	if tkn.lastChar == ':' {
+		if tkn.mode == ParserModePostgres {
+			buffer.WriteByte(byte(tkn.lastChar))
+			tkn.next()
+			return TYPECAST, buffer.Bytes()
+		}
 		token = LIST_ARG
 		buffer.WriteByte(byte(tkn.lastChar))
 		tkn.next()

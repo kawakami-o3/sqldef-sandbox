@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"syscall"
 
-	"github.com/howeyc/gopass"
 	"github.com/jessevdk/go-flags"
-	"github.com/kawakami-o3/sqldef-sandbox"
-	"github.com/kawakami-o3/sqldef-sandbox/adapter"
-	"github.com/kawakami-o3/sqldef-sandbox/adapter/mysql"
-	"github.com/kawakami-o3/sqldef-sandbox/schema"
+	"github.com/k0kubun/sqldef"
+	"github.com/k0kubun/sqldef/adapter"
+	"github.com/k0kubun/sqldef/adapter/mysql"
+	"github.com/k0kubun/sqldef/schema"
+	"golang.org/x/crypto/ssh/terminal"
 )
+
+var version string
 
 // Return parsed options and schema filename
 // TODO: Support `sqldef schema.sql -opt val...`
@@ -26,7 +29,9 @@ func parseOptions(args []string) (adapter.Config, *sqldef.Options) {
 		File     string `long:"file" description:"Read schema SQL from the file, rather than stdin" value-name:"sql_file" default:"-"`
 		DryRun   bool   `long:"dry-run" description:"Don't run DDLs but just show them"`
 		Export   bool   `long:"export" description:"Just dump the current schema to stdout"`
+		SkipDrop bool   `long:"skip-drop" description:"Skip destructive changes such as DROP"`
 		Help     bool   `long:"help" description:"Show this help"`
+		Version  bool   `long:"version" description:"Show this version"`
 	}
 
 	parser := flags.NewParser(&opts, flags.None)
@@ -38,6 +43,11 @@ func parseOptions(args []string) (adapter.Config, *sqldef.Options) {
 
 	if opts.Help {
 		parser.WriteHelp(os.Stdout)
+		os.Exit(0)
+	}
+
+	if opts.Version {
+		fmt.Println(version)
 		os.Exit(0)
 	}
 
@@ -53,9 +63,10 @@ func parseOptions(args []string) (adapter.Config, *sqldef.Options) {
 	database := args[0]
 
 	options := sqldef.Options{
-		SqlFile: opts.File,
-		DryRun:  opts.DryRun,
-		Export:  opts.Export,
+		SqlFile:  opts.File,
+		DryRun:   opts.DryRun,
+		Export:   opts.Export,
+		SkipDrop: opts.SkipDrop,
 	}
 
 	password, ok := os.LookupEnv("MYSQL_PWD")
@@ -65,7 +76,7 @@ func parseOptions(args []string) (adapter.Config, *sqldef.Options) {
 
 	if opts.Prompt {
 		fmt.Printf("Enter Password: ")
-		pass, err := gopass.GetPasswd()
+		pass, err := terminal.ReadPassword(int(syscall.Stdin))
 		if err != nil {
 			log.Fatal(err)
 		}

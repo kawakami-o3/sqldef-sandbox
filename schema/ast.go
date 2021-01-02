@@ -33,11 +33,18 @@ type AddForeignKey struct {
 	foreignKey ForeignKey
 }
 
+type AddPolicy struct {
+	statement string
+	tableName string
+	policy    Policy
+}
+
 type Table struct {
 	name        string
 	columns     []Column
 	indexes     []Index
 	foreignKeys []ForeignKey
+	policies    []Policy
 	// XXX: have options and alter on its change?
 }
 
@@ -46,15 +53,21 @@ type Column struct {
 	position      int
 	typeName      string
 	unsigned      bool
-	notNull       bool
+	notNull       *bool
 	autoIncrement bool
+	array         bool
 	defaultVal    *Value
 	length        *Value
 	scale         *Value
+	charset       string
+	collate       string
+	timezone      bool // for Postgres `with time zone`
 	keyOption     ColumnKeyOption
 	onUpdate      *Value
+	enumValues    []string
+	references    string
 	// TODO: keyopt
-	// XXX: charset, collate, zerofill?
+	// XXX: zerofill?
 }
 
 type Index struct {
@@ -63,6 +76,7 @@ type Index struct {
 	columns   []IndexColumn
 	primary   bool
 	unique    bool
+	where     string // for Postgres `Partial Indexes`
 }
 
 type IndexColumn struct {
@@ -78,6 +92,22 @@ type ForeignKey struct {
 	referenceColumns []string
 	onDelete         string
 	onUpdate         string
+}
+
+type Policy struct {
+	name          string
+	referenceName string
+	permissive    string
+	scope         string
+	roles         []string
+	using         string
+	withCheck     string
+}
+
+type View struct {
+	statement  string
+	name       string
+	definition string
 }
 
 type Value struct {
@@ -134,6 +164,14 @@ func (a *AddForeignKey) Statement() string {
 	return a.statement
 }
 
+func (a *AddPolicy) Statement() string {
+	return a.statement
+}
+
+func (v *View) Statement() string {
+	return v.statement
+}
+
 func (t *Table) PrimaryKey() *Index {
 	for _, index := range t.indexes {
 		if index.primary {
@@ -162,4 +200,8 @@ func (t *Table) PrimaryKey() *Index {
 		primary:   true,
 		unique:    true,
 	}
+}
+
+func (keyOption ColumnKeyOption) isUnique() bool {
+	return keyOption == ColumnKeyUnique || keyOption == ColumnKeyUniqueKey
 }

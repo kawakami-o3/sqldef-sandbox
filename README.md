@@ -1,6 +1,6 @@
 # sqldef [![Build Status](https://travis-ci.org/k0kubun/sqldef.svg?branch=master)](https://travis-ci.org/k0kubun/sqldef)
 
-The easiest idempotent MySQL/PostgreSQL schema management by SQL.
+The easiest idempotent MySQL/PostgreSQL/SQLite3 schema management by SQL.
 
 This is inspired by [Ridgepole](https://github.com/winebarrel/ridgepole) but using SQL,
 so there's no need to remember Ruby DSL.
@@ -34,6 +34,7 @@ Application Options:
       --file=sql_file        Read schema SQL from the file, rather than stdin (default: -)
       --dry-run              Don't run DDLs but just show them
       --export               Just dump the current schema to stdout
+      --skip-drop            Skip destructive changes such as DROP
       --help                 Show this help
 ```
 
@@ -89,6 +90,10 @@ Run: 'ALTER TABLE user ADD INDEX index_name(name);'
 # Operation is idempotent, safe for running it multiple times
 $ mysqldef -uroot test < schema.sql
 Nothing is modified
+
+# Run without droping existing tables and columns
+$ mysqldef -uroot test --skip-drop < schema.sql
+Skipped: 'DROP TABLE users;'
 ```
 
 ### psqldef
@@ -109,6 +114,7 @@ Application Options:
   -f, --file=filename        Read schema SQL from the file, rather than stdin (default: -)
       --dry-run              Don't run DDLs but just show them
       --export               Just dump the current schema to stdout
+      --skip-drop            Skip destructive changes such as DROP
       --help                 Show this help
 ```
 
@@ -171,6 +177,25 @@ Run: 'ALTER TABLE users DROP COLUMN name;'
 # Operation is idempotent, safe for running it multiple times
 $ psqldef -U postgres test < schema.sql
 Nothing is modified
+
+# Run without droping existing tables and columns
+$ psqldef -U postgres test --skip-drop < schema.sql
+Skipped: 'DROP TABLE users;'
+```
+
+### sqlite3def
+
+```
+$ sqlite3def --help
+Usage:
+  sqlite3def [option...] db_name
+
+Application Options:
+  -f, --file=filename    Read schema SQL from the file, rather than stdin (default: -)
+      --dry-run          Don't run DDLs but just show them
+      --export           Just dump the current schema to stdout
+      --skip-drop        Skip destructive changes such as DROP
+      --help             Show this help
 ```
 
 ## Supported features
@@ -184,11 +209,17 @@ Some of them can also be used for input schema file.
   - Index: ADD INDEX, ADD UNIQUE INDEX, CREATE INDEX, CREATE UNIQUE INDEX, DROP INDEX
   - Primary key: ADD PRIMARY KEY, DROP PRIMARY KEY
   - Foreign Key: ADD FOREIGN KEY, DROP FOREIGN KEY
+  - View: CREATE VIEW, CREATE OR REPLACE VIEW, DROP VIEW
 - PostgreSQL
   - Table: CREATE TABLE, DROP TABLE
-  - Column: ADD COLUMN, DROP COLUMN
+  - Column: ADD COLUMN, ALTER COLUMN, DROP COLUMN
   - Index: CREATE INDEX, CREATE UNIQUE INDEX, DROP INDEX
-  - Foreign Key: ADD FOREIGN KEY, DROP CONSTRAINT
+  - Foreign / Primary Key: ADD FOREIGN KEY, DROP CONSTRAINT
+  - Policy: CREATE POLICY, DROP POLICY
+  - View: CREATE VIEW, CREATE OR REPLACE VIEW, DROP VIEW
+- SQLite3
+  - Table: CREATE TABLE, DROP TABLE
+  - View: CREATE VIEW, DROP VIEW
 
 ## MySQL examples
 ### CREATE TABLE
@@ -276,6 +307,21 @@ Remove the line to DROP FOREIGN KEY.
 
 Composite foreign key may not work for now.
 
+### CREATE (OR REPLACE) VIEW
+
+```diff
+ CREATE VIEW foo AS
+   select u.id as id, p.id as post_id
+   from  (
+     mysqldef_test.users as u
+     join mysqldef_test.posts as p on ((u.id = p.user_id))
+   )
+ ;
++ CREATE OR REPLACE VIEW foo AS select u.id as id, p.id as post_id from (mysqldef_test.users as u join mysqldef_test.posts as p on (((u.id = p.user_id) and (p.is_deleted = 0))));
+```
+
+Remove the line to DROP VIEW.
+
 ## PostgreSQL examples
 ### CREATE TABLE
 ```diff
@@ -325,6 +371,60 @@ Remove the line to DROP INDEX.
 
 Remove the line to DROP CONSTRAINT.
 
+### ADD POLICY
+
+```diff
+ CREATE TABLE users (
+   id BIGINT PRIMARY KEY,
+   name VARCHAR(40)
+ );
+ CREATE POLICY p_users ON users AS PERMISSIVE FOR ALL TO PUBLIC USING (id = (current_user)::integer) WITH CHECK ((name)::text = current_user)
+
++CREATE POLICY p_users ON users AS PERMISSIVE FOR ALL TO PUBLIC USING (id = (current_user)::integer) WITH CHECK ((name)::text = current_user)
+```
+
+Remove the line to DROP POLICY.
+
+### CREATE (OR REPLACE) VIEW
+
+```diff
+ CREATE VIEW foo AS
+   select u.id as id, p.id as post_id
+   from  (
+     mysqldef_test.users as u
+     join mysqldef_test.posts as p on ((u.id = p.user_id))
+   )
+ ;
++ CREATE OR REPLACE VIEW foo AS select u.id as id, p.id as post_id from (users as u join posts as p on (((u.id = p.user_id) and (p.is_deleted = 0))));
+```
+
+Remove the line to DROP VIEW.
+
+## Distributions
+### Linux
+A debian package might be supported in the future, but for now it has not been implemented yet.
+
+```bash
+# mysqldef
+wget -O - https://github.com/k0kubun/sqldef/releases/latest/download/mysqldef_linux_amd64.tar.gz \
+  | tar xvz
+
+# psqldef
+wget -O - https://github.com/k0kubun/sqldef/releases/latest/download/psqldef_linux_amd64.tar.gz \
+  | tar xvz
+```
+
+### macOS
+[Homebrew tap](https://github.com/sqldef/homebrew-sqldef) is available.
+
+```
+# mysqldef
+brew install sqldef/sqldef/mysqldef
+
+# psqldef
+brew install sqldef/sqldef/psqldef
+```
+
 ## Limitations
 
 Because sqldef distinguishes table/index/column by its name, sqldef does NOT support:
@@ -338,24 +438,14 @@ To rename them, you would need to rename manually and use `--export` again.
 
 ## Development
 
-Following settings could be dangerous. Please develop sqldef under a secure network.
+You can use the following command to prepare MySQL and PostgreSQL to be used for running tests.
 
-### mysqldef
-
-To run integration tests, `mysql -uroot` needs to succeed by following options:
-
-* Run: `sudo mysqladmin -u root -p password ''`
-* Login to mysql with administrator user somehow, and run `SET PASSWORD FOR root@localhost=PASSWORD('');`
-
-Then running `make test-mysqldef` will help your development.
-
-### psqldef
-
-To run integration tests, `psql -Upostgres` needs to succeed by:
-
-1. Open `pg_hba.conf` (ex: `/etc/postgresql/10/main/pg_hba.conf`)
-2. Change `local all postgres peer` to `local all postgres trust`
-3. Restart postgresql server (ex: `systemctl restart postgresql`)
+```
+$ sudo apt install mysql-client postgresql-client
+$ docker-compose up
+$ make test-mysqldef MYSQL_HOST=127.0.0.1
+$ make test-psqldef PGHOST=127.0.0.1 PGSSLMODE=disable
+```
 
 ## License
 

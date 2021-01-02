@@ -1404,8 +1404,8 @@ func TestCaseSensitivity(t *testing.T) {
 		input:  "CREATE TABLE A (\n\t`A` int\n)",
 		output: "create table A (\n\tA int\n)",
 	}, {
-		input:  "create view A",
-		output: "create table a",
+		input:  "create view A as select a from b",
+		output: "create view a as select a from b",
 	}, {
 		input:  "alter view A",
 		output: "alter table a",
@@ -1682,6 +1682,7 @@ func TestCreateTable(t *testing.T) {
 			"	col_real2 real(1,2) not null default 1.23,\n" +
 			"	col_double double,\n" +
 			"	col_double2 double(3,4) not null default 1.23,\n" +
+			"	col_double_precision double precision,\n" +
 			"	col_float float,\n" +
 			"	col_float2 float(3,4) not null default 1.23,\n" +
 			"	col_decimal decimal,\n" +

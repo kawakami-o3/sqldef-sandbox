@@ -24,8 +24,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/kawakami-o3/sqldef-sandbox/sqlparser/dependency/querypb"
-	"github.com/kawakami-o3/sqldef-sandbox/sqlparser/dependency/sqltypes"
+	"github.com/k0kubun/sqldef/sqlparser/dependency/querypb"
+	"github.com/k0kubun/sqldef/sqlparser/dependency/sqltypes"
 )
 
 // Instructions for creating new types: If a type
@@ -668,6 +668,8 @@ type DDL struct {
 	VindexSpec    *VindexSpec
 	VindexCols    []ColIdent
 	ForeignKey    *ForeignKeyDefinition
+	Policy        *Policy
+	View          *View
 }
 
 // DDL strings.
@@ -684,6 +686,8 @@ const (
 	CreateIndexStr   = "create index"
 	AddPrimaryKeyStr = "add primary key"
 	AddForeignKeyStr = "add foreign key"
+	CreatePolicyStr  = "create policy"
+	CreateViewStr    = "create view"
 
 	// Vindex DDL param to specify the owner of a vindex
 	VindexOwnerStr = "owner"
@@ -714,6 +718,8 @@ func (node *DDL) Format(buf *TrackedBuffer) {
 		}
 	case CreateVindexStr:
 		buf.Myprintf("%s %v %v", node.Action, node.VindexSpec.Name, node.VindexSpec)
+	case CreateViewStr:
+		buf.Myprintf("%s %v as %v", node.Action, node.View.Name, node.View.Definition)
 	case AddColVindexStr:
 		buf.Myprintf("alter table %v %s %v (", node.Table, node.Action, node.VindexSpec.Name)
 		for i, col := range node.VindexCols {
@@ -903,11 +909,12 @@ type ColumnType struct {
 	Type string
 
 	// Generic field options.
-	NotNull       BoolVal
+	NotNull       *BoolVal
 	Autoincrement BoolVal
 	Default       *SQLVal
 	OnUpdate      *SQLVal
 	Comment       *SQLVal
+	Array         BoolVal
 
 	// Numeric field options
 	Length   *SQLVal
@@ -919,11 +926,18 @@ type ColumnType struct {
 	Charset string
 	Collate string
 
+	// Timestamp field options
+	Timezone BoolVal
+
 	// Enum values
 	EnumValues []string
 
 	// Key specification
 	KeyOpt ColumnKeyOption
+
+	References     string
+	ReferenceNames Columns
+	// TODO: Allow specifying referenced column names
 }
 
 // Format returns a canonical string representation of the type and all relevant options
@@ -954,7 +968,10 @@ func (ct *ColumnType) Format(buf *TrackedBuffer) {
 	if ct.Collate != "" {
 		opts = append(opts, keywordStrings[COLLATE], ct.Collate)
 	}
-	if ct.NotNull {
+	if ct.Timezone {
+		opts = append(opts, keywordStrings[WITH], keywordStrings[TIME], keywordStrings[ZONE])
+	}
+	if ct.NotNull != nil && *ct.NotNull {
 		opts = append(opts, keywordStrings[NOT], keywordStrings[NULL])
 	}
 	if ct.Default != nil {
@@ -1007,6 +1024,9 @@ func (ct *ColumnType) DescribeType() string {
 	}
 	if ct.Zerofill {
 		opts = append(opts, keywordStrings[ZEROFILL])
+	}
+	if ct.Timezone {
+		opts = append(opts, keywordStrings[WITH], keywordStrings[TIME], keywordStrings[ZONE])
 	}
 	if len(opts) != 0 {
 		buf.Myprintf(" %s", strings.Join(opts, " "))
@@ -1223,6 +1243,7 @@ type IndexSpec struct {
 	Type    ColIdent
 	Unique  bool
 	Primary bool
+	Where   *Where
 }
 
 // VindexSpec defines a vindex for a CREATE VINDEX or DROP VINDEX statement
@@ -1309,6 +1330,26 @@ type ForeignKeyDefinition struct {
 	ReferenceColumns []ColIdent
 	OnDelete         ColIdent
 	OnUpdate         ColIdent
+}
+
+type Policy struct {
+	Name       ColIdent
+	Permissive Permissive
+	Scope      []byte
+	To         []ColIdent
+	Using      *Where
+	WithCheck  *Where
+}
+
+type Permissive string
+
+const (
+	PermissiveStr  Permissive = "permissive"
+	RestrictiveStr Permissive = "restrictive"
+)
+
+func (p Permissive) Raw() string {
+	return string(p)
 }
 
 // Show represents a show statement.
@@ -1479,6 +1520,12 @@ func (node Comments) Format(buf *TrackedBuffer) {
 
 func (node Comments) walkSubtree(visit Visit) error {
 	return nil
+}
+
+type View struct {
+	Action     string
+	Name       TableName
+	Definition SelectStatement
 }
 
 // SelectExprs represents SELECT expressions.
@@ -2302,6 +2349,7 @@ const (
 	HexVal
 	ValArg
 	BitVal
+	ValBool
 )
 
 // SQLVal represents a single value.
@@ -2345,6 +2393,19 @@ func NewValArg(in []byte) *SQLVal {
 	return &SQLVal{Type: ValArg, Val: in}
 }
 
+func NewBoolSQLVal(in bool) *SQLVal {
+	return &SQLVal{Type: ValBool, Val: []byte(fmt.Sprintf("%t", in))}
+}
+
+func NewValArgWithOpt(in []byte, opt *SQLVal) *SQLVal {
+	if opt != nil {
+		combined := string(in) + "(" + string(opt.Val) + ")"
+		return NewValArg([]byte(combined))
+	} else {
+		return NewValArg(in)
+	}
+}
+
 // Format formats the node.
 func (node *SQLVal) Format(buf *TrackedBuffer) {
 	switch node.Type {
@@ -2358,6 +2419,8 @@ func (node *SQLVal) Format(buf *TrackedBuffer) {
 		buf.Myprintf("B'%s'", []byte(node.Val))
 	case ValArg:
 		buf.WriteArg(string(node.Val))
+	case ValBool:
+		buf.Myprintf("%t", node.Val)
 	default:
 		panic("unexpected")
 	}
@@ -2399,6 +2462,11 @@ func (node *NullVal) replace(from, to Expr) bool {
 
 // BoolVal is true or false.
 type BoolVal bool
+
+func NewBoolVal(flag bool) *BoolVal {
+	val := BoolVal(flag)
+	return &val
+}
 
 // Format formats the node.
 func (node BoolVal) Format(buf *TrackedBuffer) {

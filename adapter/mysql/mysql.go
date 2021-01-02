@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	driver "github.com/go-sql-driver/mysql"
-	"github.com/kawakami-o3/sqldef-sandbox/adapter"
+	"github.com/k0kubun/sqldef/adapter"
 )
 
 type MysqlDatabase struct {
@@ -54,6 +54,28 @@ func (d *MysqlDatabase) DumpTableDDL(table string) (string, error) {
 	}
 
 	return ddl, nil
+}
+
+func (d *MysqlDatabase) Views() ([]string, error) {
+	rows, err := d.db.Query("show full tables where TABLE_TYPE = 'VIEW'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ddls []string
+	for rows.Next() {
+		var viewName, viewType, definition string
+		if err = rows.Scan(&viewName, &viewType); err != nil {
+			return nil, err
+		}
+		query := fmt.Sprintf("select VIEW_DEFINITION from INFORMATION_SCHEMA.VIEWS where TABLE_NAME = '%s';", viewName)
+		if err = d.db.QueryRow(query).Scan(&definition); err != nil {
+			return nil, err
+		}
+		ddls = append(ddls, fmt.Sprintf("CREATE VIEW %s AS %s", viewName, definition))
+	}
+	return ddls, nil
 }
 
 func (d *MysqlDatabase) DB() *sql.DB {

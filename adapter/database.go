@@ -20,6 +20,7 @@ type Config struct {
 type Database interface {
 	TableNames() ([]string, error)
 	DumpTableDDL(table string) (string, error)
+	Views() ([]string, error)
 	DB() *sql.DB
 	Close() error
 }
@@ -39,16 +40,27 @@ func DumpDDLs(d Database) (string, error) {
 
 		ddls = append(ddls, ddl)
 	}
+
+	viewDDLs, err := d.Views()
+	if err != nil {
+		return "", err
+	}
+	ddls = append(ddls, viewDDLs...)
+
 	return strings.Join(ddls, ";\n\n"), nil
 }
 
-func RunDDLs(d Database, ddls []string) error {
+func RunDDLs(d Database, ddls []string, skipDrop bool) error {
 	transaction, err := d.DB().Begin()
 	if err != nil {
 		return err
 	}
 	fmt.Println("-- Apply --")
 	for _, ddl := range ddls {
+		if skipDrop && strings.Contains(ddl, "DROP") {
+			fmt.Printf("-- Skipped: %s;\n", ddl)
+			continue
+		}
 		fmt.Printf("%s;\n", ddl)
 		if _, err := transaction.Exec(ddl); err != nil {
 			transaction.Rollback()

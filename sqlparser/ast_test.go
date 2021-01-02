@@ -24,7 +24,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/kawakami-o3/sqldef-sandbox/sqlparser/dependency/sqltypes"
+	"github.com/k0kubun/sqldef/sqlparser/dependency/sqltypes"
 )
 
 func TestAppend(t *testing.T) {

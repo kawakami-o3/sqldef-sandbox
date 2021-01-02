@@ -4,16 +4,25 @@ package schema
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/kawakami-o3/sqldef-sandbox/sqlparser"
+	"github.com/k0kubun/sqldef/sqlparser"
 )
 
 // Convert back `type BoolVal bool`
 func castBool(val sqlparser.BoolVal) bool {
 	ret, _ := strconv.ParseBool(fmt.Sprint(val))
 	return ret
+}
+
+func castBoolPtr(val *sqlparser.BoolVal) *bool {
+	if val == nil {
+		return nil
+	}
+	ret := castBool(*val)
+	return &ret
 }
 
 func parseValue(val *sqlparser.SQLVal) *Value {
@@ -65,7 +74,7 @@ func parseValue(val *sqlparser.SQLVal) *Value {
 	return &ret
 }
 
-func parseTable(stmt *sqlparser.DDL) Table {
+func parseTable(mode GeneratorMode, stmt *sqlparser.DDL) Table {
 	columns := []Column{}
 	indexes := []Index{}
 	foreignKeys := []ForeignKey{}
@@ -76,13 +85,19 @@ func parseTable(stmt *sqlparser.DDL) Table {
 			position:      i,
 			typeName:      parsedCol.Type.Type,
 			unsigned:      castBool(parsedCol.Type.Unsigned),
-			notNull:       castBool(parsedCol.Type.NotNull),
+			notNull:       castBoolPtr(parsedCol.Type.NotNull),
 			autoIncrement: castBool(parsedCol.Type.Autoincrement),
+			array:         castBool(parsedCol.Type.Array),
 			defaultVal:    parseValue(parsedCol.Type.Default),
 			length:        parseValue(parsedCol.Type.Length),
 			scale:         parseValue(parsedCol.Type.Scale),
+			charset:       parsedCol.Type.Charset,
+			collate:       normalizeCollate(parsedCol.Type.Collate, *stmt.TableSpec),
+			timezone:      castBool(parsedCol.Type.Timezone),
 			keyOption:     ColumnKeyOption(parsedCol.Type.KeyOpt), // FIXME: tight coupling in enum order
 			onUpdate:      parseValue(parsedCol.Type.OnUpdate),
+			enumValues:    parsedCol.Type.EnumValues,
+			references:    parsedCol.Type.References,
 		}
 		columns = append(columns, column)
 	}
@@ -133,7 +148,7 @@ func parseTable(stmt *sqlparser.DDL) Table {
 	}
 
 	return Table{
-		name:        stmt.NewName.Name.String(),
+		name:        normalizedTableName(mode, stmt.NewName),
 		columns:     columns,
 		indexes:     indexes,
 		foreignKeys: foreignKeys,
@@ -156,12 +171,23 @@ func parseIndex(stmt *sqlparser.DDL) (Index, error) {
 		)
 	}
 
+	where := ""
+	if stmt.IndexSpec.Where != nil && stmt.IndexSpec.Where.Type == sqlparser.WhereStr {
+		expr := stmt.IndexSpec.Where.Expr
+		// remove root paren expression
+		if parenExpr, ok := expr.(*sqlparser.ParenExpr); ok {
+			expr = parenExpr.Expr
+		}
+		where = sqlparser.String(expr)
+	}
+
 	return Index{
 		name:      stmt.IndexSpec.Name.String(),
 		indexType: "", // not supported in parser yet
 		columns:   indexColumns,
 		primary:   false, // not supported in parser yet
 		unique:    stmt.IndexSpec.Unique,
+		where:     where,
 	}, nil
 }
 
@@ -169,10 +195,15 @@ func parseIndex(stmt *sqlparser.DDL) (Index, error) {
 // This doesn't support destructive DDL like `DROP TABLE`.
 func parseDDL(mode GeneratorMode, ddl string) (DDL, error) {
 	var parserMode sqlparser.ParserMode
-	if mode == GeneratorModePostgres {
-		parserMode = sqlparser.ParserModePostgres
-	} else {
+	switch mode {
+	case GeneratorModeMysql:
 		parserMode = sqlparser.ParserModeMysql
+	case GeneratorModePostgres:
+		parserMode = sqlparser.ParserModePostgres
+	case GeneratorModeSQLite3:
+		parserMode = sqlparser.ParserModeSQLite3
+	default:
+		panic("unrecognized parser mode")
 	}
 
 	stmt, err := sqlparser.ParseStrictDDLWithMode(ddl, parserMode)
@@ -186,7 +217,7 @@ func parseDDL(mode GeneratorMode, ddl string) (DDL, error) {
 			// TODO: handle other create DDL as error?
 			return &CreateTable{
 				statement: ddl,
-				table:     parseTable(stmt),
+				table:     parseTable(mode, stmt),
 			}, nil
 		} else if stmt.Action == "create index" {
 			index, err := parseIndex(stmt)
@@ -195,7 +226,7 @@ func parseDDL(mode GeneratorMode, ddl string) (DDL, error) {
 			}
 			return &CreateIndex{
 				statement: ddl,
-				tableName: stmt.Table.Name.String(),
+				tableName: normalizedTableName(mode, stmt.Table),
 				index:     index,
 			}, nil
 		} else if stmt.Action == "add index" {
@@ -205,7 +236,7 @@ func parseDDL(mode GeneratorMode, ddl string) (DDL, error) {
 			}
 			return &AddIndex{
 				statement: ddl,
-				tableName: stmt.Table.Name.String(),
+				tableName: normalizedTableName(mode, stmt.Table),
 				index:     index,
 			}, nil
 		} else if stmt.Action == "add primary key" {
@@ -215,7 +246,7 @@ func parseDDL(mode GeneratorMode, ddl string) (DDL, error) {
 			}
 			return &AddPrimaryKey{
 				statement: ddl,
-				tableName: stmt.Table.Name.String(),
+				tableName: normalizedTableName(mode, stmt.Table),
 				index:     index,
 			}, nil
 		} else if stmt.Action == "add foreign key" {
@@ -230,7 +261,7 @@ func parseDDL(mode GeneratorMode, ddl string) (DDL, error) {
 
 			return &AddForeignKey{
 				statement: ddl,
-				tableName: stmt.Table.Name.String(),
+				tableName: normalizedTableName(mode, stmt.Table),
 				foreignKey: ForeignKey{
 					constraintName:   stmt.ForeignKey.ConstraintName.String(),
 					indexName:        stmt.ForeignKey.IndexName.String(),
@@ -240,6 +271,36 @@ func parseDDL(mode GeneratorMode, ddl string) (DDL, error) {
 					onDelete:         stmt.ForeignKey.OnDelete.String(),
 					onUpdate:         stmt.ForeignKey.OnUpdate.String(),
 				},
+			}, nil
+		} else if stmt.Action == "create policy" {
+			scope := make([]string, len(stmt.Policy.To))
+			for i, to := range stmt.Policy.To {
+				scope[i] = to.String()
+			}
+			var using, withCheck string
+			if stmt.Policy.Using != nil {
+				using = sqlparser.String(stmt.Policy.Using.Expr)
+			}
+			if stmt.Policy.WithCheck != nil {
+				withCheck = sqlparser.String(stmt.Policy.WithCheck.Expr)
+			}
+			return &AddPolicy{
+				statement: ddl,
+				tableName: normalizedTableName(mode, stmt.Table),
+				policy: Policy{
+					name:       stmt.Policy.Name.String(),
+					permissive: stmt.Policy.Permissive.Raw(),
+					scope:      string(stmt.Policy.Scope),
+					roles:      scope,
+					using:      using,
+					withCheck:  withCheck,
+				},
+			}, nil
+		} else if stmt.Action == "create view" {
+			return &View{
+				statement:  ddl,
+				name:       stmt.View.Name.Name.String(),
+				definition: sqlparser.String(stmt.View.Definition),
 			}, nil
 		} else {
 			return nil, fmt.Errorf(
@@ -255,6 +316,9 @@ func parseDDL(mode GeneratorMode, ddl string) (DDL, error) {
 // Parse `ddls`, which is expected to `;`-concatenated DDLs
 // and not to include destructive DDL.
 func parseDDLs(mode GeneratorMode, str string) ([]DDL, error) {
+	re := regexp.MustCompilePOSIX("^--.*")
+	str = re.ReplaceAllString(str, "")
+
 	ddls := strings.Split(str, ";")
 	result := []DDL{}
 
@@ -271,4 +335,37 @@ func parseDDLs(mode GeneratorMode, str string) ([]DDL, error) {
 		result = append(result, parsed)
 	}
 	return result, nil
+}
+
+// Replace pseudo collation "binary" with "{charset}_bin"
+func normalizeCollate(collate string, table sqlparser.TableSpec) string {
+	if collate == "binary" {
+		return detectCharset(table) + "_bin"
+	} else {
+		return collate
+	}
+}
+
+// Qualify Postgres schema
+func normalizedTableName(mode GeneratorMode, tableName sqlparser.TableName) string {
+	table := tableName.Name.String()
+	if mode == GeneratorModePostgres {
+		if len(tableName.Qualifier.String()) > 0 {
+			table = tableName.Qualifier.String() + "." + table
+		} else {
+			table = "public." + table
+		}
+	}
+	return table
+}
+
+// TODO: parse charset in parser.y instead of "detecting" it
+func detectCharset(table sqlparser.TableSpec) string {
+	for _, option := range strings.Split(table.Options, " ") {
+		if strings.HasPrefix(option, "charset=") {
+			return strings.TrimLeft(option, "charset=")
+		}
+	}
+	// TODO: consider returning err when charset is missing
+	return ""
 }
