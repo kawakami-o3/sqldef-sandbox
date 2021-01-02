@@ -1,4 +1,4 @@
-module github.com/kawakamio-o3/sqldef-sandbox
+module github.com/kawakami-o3/sqldef-sandbox
 
 go 1.13
 
